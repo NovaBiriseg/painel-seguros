@@ -20,49 +20,51 @@ st.markdown("---")
 
 @st.cache_data(ttl=60)
 def load_excel(url):
-    # read as bytes then use pandas ExcelFile to support Google export links
+    """
+    Carrega todas as abas do arquivo Excel e retorna um dicionário {sheet_name: DataFrame}.
+    Isso evita retornar objetos não serializáveis (ex: ExcelFile) para o cache do Streamlit.
+    """
     try:
-        df_xls = pd.ExcelFile(url)
-        return df_xls
+        # read_excel with sheet_name=None returns a dict of DataFrames
+        data = pd.read_excel(url, sheet_name=None, engine='openpyxl')
+        # Normalize column names (strip whitespace)
+        for k, df in data.items():
+            df.columns = [str(c).strip() for c in df.columns]
+        return data
     except Exception as e:
         st.error(f"Erro ao carregar a planilha: {e}")
         return None
 
-xls = load_excel(EXCEL_URL)
-if xls is None:
+# Load all sheets
+sheets = load_excel(EXCEL_URL)
+if sheets is None:
     st.stop()
 
-abas = xls.sheet_names
+abas = list(sheets.keys())
 aba = st.selectbox("Escolha a ABA da planilha:", abas)
 
-try:
-    df = pd.read_excel(xls, sheet_name=aba)
-except Exception as e:
-    st.error(f"Erro ao ler a aba selecionada: {e}")
-    st.stop()
+# get dataframe for selected sheet
+df = sheets.get(aba).copy()
 
-# Normalize column names (strip)
+# Ensure columns trimmed
 df.columns = [str(c).strip() for c in df.columns]
 
-# Ensure expected columns exist (best-effort)
-expected_cols = ["Dia","Segurado","Apólice","Prêmio Líquido","Fator %","Status","Cia","Item","CPF/CNPJ","Franquia","Colaborador"]
-
+# Sidebar filters
 st.sidebar.header("Filtros")
-# Filters
-colaborador_list = ["Todos"] + sorted(df.get('Colaborador', pd.Series([])).dropna().astype(str).unique().tolist())
+colaborador_list = ["Todos"]
+if 'Colaborador' in df.columns:
+    colaborador_list += sorted(df['Colaborador'].dropna().astype(str).unique().tolist())
 colaborador = st.sidebar.selectbox("Colaborador", colaborador_list)
 status_filter = st.sidebar.selectbox("Status", ["Todos","pendente","renovado"]) 
 busca = st.sidebar.text_input("Buscar por CPF / Apólice / Segurado")
 
 # Apply filters
 df_filtered = df.copy()
-if colaborador != "Todos":
-    if 'Colaborador' in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered['Colaborador'] == colaborador]
+if colaborador != "Todos" and 'Colaborador' in df_filtered.columns:
+    df_filtered = df_filtered[df_filtered['Colaborador'] == colaborador]
 
-if status_filter and status_filter != "Todos":
-    if 'Status' in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered['Status'].astype(str).str.lower() == status_filter.lower()]
+if status_filter and status_filter != "Todos" and 'Status' in df_filtered.columns:
+    df_filtered = df_filtered[df_filtered['Status'].astype(str).str.lower() == status_filter.lower()]
 
 if busca and busca.strip() != "":
     q = busca.strip().lower()
@@ -78,7 +80,6 @@ col1, col2, col3 = st.columns(3)
 
 total_premio = 0
 if 'Prêmio Líquido' in df_filtered.columns:
-    # try to coerce to numeric
     total_premio = pd.to_numeric(df_filtered['Prêmio Líquido'].astype(str).str.replace('[^0-9,.-]','', regex=True).str.replace(',', '.'), errors='coerce').sum()
 
 total_pendente = 0
@@ -94,13 +95,12 @@ col3.metric("🟢 Renovados", total_renovado)
 
 # Chart: production by day
 if 'Dia' in df_filtered.columns and 'Prêmio Líquido' in df_filtered.columns:
-    # try convert Dia to datetime
     try:
         df_chart = df_filtered.copy()
         df_chart['Dia_dt'] = pd.to_datetime(df_chart['Dia'], dayfirst=True, errors='coerce')
         df_chart = df_chart.dropna(subset=['Dia_dt'])
+        df_chart['Prêmio Líquido'] = pd.to_numeric(df_chart['Prêmio Líquido'].astype(str).str.replace('[^0-9,.-]','', regex=True).str.replace(',', '.'), errors='coerce')
         df_group = df_chart.groupby('Dia_dt', as_index=False)['Prêmio Líquido'].sum()
-        df_group['Prêmio Líquido'] = pd.to_numeric(df_group['Prêmio Líquido'].astype(str).str.replace('[^0-9,.-]','', regex=True).str.replace(',', '.'), errors='coerce')
         fig = px.bar(df_group, x='Dia_dt', y='Prêmio Líquido', labels={'Dia_dt':'Dia','Prêmio Líquido':'Prêmio'}, title='Produção por Dia')
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
@@ -108,16 +108,16 @@ if 'Dia' in df_filtered.columns and 'Prêmio Líquido' in df_filtered.columns:
 
 st.subheader('Tabela de Registros')
 
-# Build display table with status indicator
-show_cols = [c for c in df_filtered.columns if c in expected_cols]
-# If not all expected, just display common ones
+# Determine columns to show (prefer common expected columns)
+expected_cols = ["Dia","Segurado","Apólice","Prêmio Líquido","Cia","Item","CPF/CNPJ","Franquia","Colaborador","Status"]
+show_cols = [c for c in expected_cols if c in df_filtered.columns]
 if not show_cols:
     show_cols = df_filtered.columns.tolist()
 
-# create copy for display
+# prepare display dataframe
 display_df = df_filtered.copy()
 
-# Create HTML column for status indicator
+# render status html
 def render_status_cell(val):
     v = str(val).strip().lower()
     if v == 'pendente':
@@ -130,18 +130,12 @@ def render_status_cell(val):
 if 'Status' in display_df.columns:
     display_df['Status'] = display_df['Status'].apply(render_status_cell)
 
-# Use st.write with unsafe_allow_html by converting to HTML table
-# Simpler: render rows manually
-
-table_html = '<table style="width:100%;border-collapse:collapse">'
+# Build HTML table
+table_html = '<div class="table-wrap"><table style="width:100%;border-collapse:collapse">'
 # header
 table_html += '<thead><tr>'
 for col in show_cols:
     table_html += f'<th style="text-align:left;padding:8px;border-bottom:1px solid #eee">{col}</th>'
-# ensure Status shown last
-if 'Status' in display_df.columns and 'Status' not in show_cols:
-    table_html += '<th style="text-align:left;padding:8px;border-bottom:1px solid #eee">Status</th>'
-
 table_html += '</tr></thead>'
 # body
 table_html += '<tbody>'
@@ -150,12 +144,9 @@ for _, row in display_df.iterrows():
     for col in show_cols:
         val = row.get(col, '')
         table_html += f'<td style="padding:10px;border-bottom:1px solid #fafafa;vertical-align:top">{val}</td>'
-    # status cell
-    if 'Status' in display_df.columns and 'Status' not in show_cols:
-        table_html += f'<td style="padding:10px;border-bottom:1px solid #fafafa;vertical-align:top">{row.get("Status","")}</td>'
     table_html += '</tr>'
 
-table_html += '</tbody></table>'
+table_html += '</tbody></table></div>'
 
 st.markdown(table_html, unsafe_allow_html=True)
 

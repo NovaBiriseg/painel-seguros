@@ -1,7 +1,7 @@
-# Painel de Seguros - Streamlit
+# Painel de Seguros - Streamlit (versão corrigida)
 
 
-Este projeto é o painel completo conectado ao seu Google Sheet (download .xlsx). Já vem com:
+Este projeto é o painel completo conectado ao seu Google Sheet (download .xlsx). Esta versão corrige um problema de cache no Streamlit.
 
 - seleção de abas da planilha
 - tabela com filtros e busca
@@ -11,7 +11,7 @@ Este projeto é o painel completo conectado ao seu Google Sheet (download .xlsx)
 
 ## Como usar
 
-1. Descompacte o arquivo `painel-seguros.zip`.
+1. Descompacte o arquivo `painel-seguros-fixed.zip`.
 2. (Opcional) Edite `config.py` se quiser alterar a URL da planilha.
 3. Crie um ambiente virtual e instale dependências:
 
