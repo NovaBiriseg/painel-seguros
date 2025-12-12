@@ -57,6 +57,14 @@ aba = st.selectbox("Escolha a aba da planilha:", abas)
 
 # DataFrame da aba selecionada
 df = sheets.get(aba).copy()
+st.subheader("DEBUG: Valores únicos na coluna Status")
+if "Status" in df.columns:
+    # mostra o repr para capturar espaços invisíveis
+    unique_vals = df["Status"].astype(str).apply(lambda x: repr(x)).unique().tolist()
+    st.write(unique_vals)
+else:
+    st.write("Coluna 'Status' não encontrada")
+
 df.columns = [str(c).strip() for c in df.columns]
 
 # ---- Sidebar filtros ----
