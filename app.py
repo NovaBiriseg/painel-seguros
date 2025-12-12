@@ -1,168 +1,65 @@
 import streamlit as st
 import pandas as pd
-import requests
-from io import BytesIO
+from config import load_sheet
 
-st.set_page_config(page_title="Painel de Seguros", layout="wide")
+st.set_page_config(
+    page_title="Painel de Seguros",
+    page_icon="📊",
+    layout="wide"
+)
 
-# ============================================================
-# URL DO GOOGLE SHEETS (com link de exportação .xlsx)
-# ============================================================
-EXCEL_URL = "https://docs.google.com/spreadsheets/d/18DKFhsyTjJZcG7FqfB757DkPDDA2YgT0/export?format=xlsx"
+st.markdown("""
+    <style>
+        .blink {
+            animation: blinker 1.2s linear infinite;
+            color: red;
+            font-weight: bold;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# ============================================================
-# Função para carregar todas as abas da planilha
-# ============================================================
-@st.cache_data(ttl=60)
-def load_all_sheets(url):
-    try:
-        # Baixa a planilha do Google Sheets
-        resp = requests.get(url)
-        resp.raise_for_status()
+st.title("📊 Painel de Seguros")
 
-        # Lê as abas e as coloca em um dicionário
-        xls = pd.read_excel(BytesIO(resp.content), sheet_name=None, engine="openpyxl")
-
-        # Limpa os nomes das colunas (removendo espaços extras)
-        for k, df in xls.items():
-            df.columns = [str(c).strip() for c in df.columns]
-
-        return xls
-
-    except Exception as e:
-        st.error("Erro ao carregar planilha do Google Sheets.")
-        st.code(str(e))
-        return {}
-
-# ============================================================
-# Carrega as planilhas
-# ============================================================
-sheets = load_all_sheets(EXCEL_URL)
-
-if not sheets:
-    st.error("❌ Não foi possível carregar nenhuma aba do Google Sheets.")
+# --------- Carregar Sheets ---------
+try:
+    df = load_sheet()
+except Exception as e:
+    st.error("❌ Não foi possível carregar os dados da planilha. Verifique a URL e o ID no st.secrets.")
     st.stop()
 
-# ============================================================
-# Seleção de aba
-# ============================================================
-abas = list(sheets.keys())
-aba = st.selectbox("Escolha a aba da planilha:", abas)
-
-df = sheets.get(aba, pd.DataFrame()).copy()
-
+# --------- Ajustes de Colunas ---------
 df.columns = df.columns.str.strip().str.lower()
 
-# ============================================================
-# Função para normalizar status (tolerante)
-# ============================================================
-def normalize_status(x):
-    s = str(x).lower().strip().replace("\xa0", " ")  # remove NBSP e normaliza
-    if "pend" in s:
-        return "pendente"
-    elif "renov" in s:
-        return "renovado"
-    return s
+required_cols = ["status", "cliente", "produto", "telefone"]
 
-if "status" in df.columns:
-    df["status"] = df["status"].apply(normalize_status)
+for col in required_cols:
+    if col not in df.columns:
+        st.warning(f"⚠️ A coluna obrigatória **'{col}'** não existe na planilha.")
+        st.stop()
 
-# ============================================================
-# SIDEBAR – FILTROS
-# ============================================================
-st.sidebar.header("Filtros")
+# --------- Filtro ---------
+status_filter = st.sidebar.selectbox("Filtrar por Status:", ["todos", "concluído", "pendente"])
 
-colab_list = ["Todos"]
-if "colaborador" in df.columns:
-    colab_list += sorted(df["colaborador"].dropna().astype(str).unique().tolist())
-colaborador = st.sidebar.selectbox("Colaborador", colab_list)
+if status_filter == "todos":
+    df_filtered = df
+else:
+    df_filtered = df[df["status"] == status_filter]
 
-status_list = ["Todos", "pendente", "renovado"]
-status_filter = st.sidebar.selectbox("Status", status_list)
+# --------- Métricas ---------
+col1, col2 = st.columns(2)
 
-busca = st.sidebar.text_input("Buscar por CPF / Apólice / Segurado")
+col1.metric("🟢 Concluídos", (df_filtered["status"] == "concluído").sum())
 
-df_filtered = df.copy()
+pendentes = (df_filtered["status"] == "pendente").sum()
 
-if colaborador != "Todos":
-    df_filtered = df_filtered[df_filtered["colaborador"] == colaborador]
+col2.markdown(
+    f"<div class='blink'>🔴 Pendentes: {pendentes}</div>",
+    unsafe_allow_html=True
+)
 
-if status_filter != "Todos":
-    df_filtered = df_filtered[df_filtered["status"] == status_filter]
-
-if busca:
-    q = busca.lower()
-    mask = pd.Series(False, index=df_filtered.index)
-    for c in ["cpf/cnpj", "apólice", "segurado"]:
-        if c in df_filtered.columns:
-            mask |= df_filtered[c].astype(str).str.lower().str.contains(q)
-    df_filtered = df_filtered[mask]
-
-# ============================================================
-# RESUMO DAS MÉTRICAS
-# ============================================================
-st.subheader("Resumo")
-
-col1, col2, col3 = st.columns(3)
-
-total_premio = 0
-if "prêmio líquido" in df_filtered.columns:
-    total_premio = pd.to_numeric(
-        df_filtered["prêmio líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
-        errors="coerce"
-    ).sum()
-
-col1.metric("💰 Produção Total (R$)", f"{total_premio:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-col2.metric("🔴 Pendentes", (df_filtered["status"] == "pendente").sum())
-col3.metric("🟢 Renovados", (df_filtered["status"] == "renovado").sum())
-
-# ============================================================
-# GRÁFICO DE PRODUÇÃO POR DIA
-# ============================================================
-if "dia" in df_filtered.columns and "prêmio líquido" in df_filtered.columns:
-    df_chart = df_filtered.copy()
-    df_chart["dia_dt"] = pd.to_datetime(df_chart["dia"], dayfirst=True, errors="coerce")
-    df_chart["prêmio líquido"] = pd.to_numeric(
-        df_chart["prêmio líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
-        errors="coerce"
-    )
-
-    df_group = df_chart.dropna(subset=["dia_dt"]).groupby("dia_dt", as_index=False)["prêmio líquido"].sum()
-
-    fig = px.bar(df_group, x="dia_dt", y="prêmio líquido", title="Produção por Dia")
-    st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================
-# TABELA COM INDICADORES VISUAIS (Pendente / Renovado)
-# ============================================================
-st.subheader("Tabela de Registros")
-
-def render_indicator(val):
-    if val == "pendente":
-        return '<span class="indicador pendente"></span><b style="color:#ff4444">Pendente</b>'
-    if val == "renovado":
-        return '<span class="indicador renovado"></span><b style="color:#16a34a">Renovado</b>'
-    return val
-
-df_filtered["status_indicador"] = df_filtered["status"].apply(render_indicator)
-
-show_cols = ["dia", "segurado", "apólice", "prêmio líquido", "cia", "item", "cpf/cnpj", "franquia", "colaborador", "status_indicador"]
-show_cols = [c for c in show_cols if c in df_filtered.columns]
-
-# Cria a tabela HTML
-html = '<div class="table-wrap"><table class="custom"><thead><tr>'
-html += "".join(f"<th>{c}</th>" for c in show_cols)
-html += "</tr></thead><tbody>"
-
-for _, row in df_filtered.iterrows():
-    html += "<tr>"
-    for c in show_cols:
-        html += f"<td>{row[c]}</td>"
-    html += "</tr>"
-
-html += "</tbody></table></div>"
-
-st.markdown(html, unsafe_allow_html=True)
-
-st.caption("Atualize a planilha no Google Sheets e recarregue o app para ver as mudanças.")
+# --------- Tabela ---------
+st.subheader("📄 Registros")
+st.dataframe(df_filtered, use_container_width=True)
