@@ -1,184 +1,143 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import requests
-from io import BytesIO
+from io import StringIO
 
 st.set_page_config(page_title="Painel de Seguros", layout="wide")
 
-# ============================================================
-# CONFIG — LINK DIRETO PARA EXPORTAR XLSX DO GOOGLE SHEETS
-# ============================================================
-EXCEL_URL = "https://docs.google.com/spreadsheets/d/18DKFhsyTjJZcG7FqfB757DkPDDA2YgT0/export?format=xlsx"
-
-# ============================================================
-# CSS GLOBAL (INDICADORES PULSANDO + TABELA)
-# ============================================================
-st.markdown("""
-<style>
-.indicador { width: 14px; height: 14px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: middle; }
-.pendente { background-color: #ff4444; animation: pulse 1.2s infinite; }
-.renovado { background-color: #16a34a; }
-
-@keyframes pulse {
-  0% { transform: scale(0.9); opacity: 0.7; }
-  50% { transform: scale(1.25); opacity: 1; }
-  100% { transform: scale(0.9); opacity: 0.7; }
-}
-
-.table-wrap { overflow:auto; }
-table.custom { width:100%; border-collapse:collapse; font-family: Inter, Arial, sans-serif; }
-table.custom th { text-align:left; padding:10px; border-bottom:1px solid #eee; background:#fafafa; font-weight:700; }
-table.custom td { padding:10px; border-bottom:1px solid #f6f7fb; }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================
-# FUNÇÃO PARA BAIXAR TODAS AS ABAS DA PLANILHA
-# ============================================================
+# ---------------------------------------------------------
+# 1) Função para carregar todas as abas do Google Sheets
+# ---------------------------------------------------------
 @st.cache_data(ttl=60)
-def load_all_sheets(url):
-    resp = requests.get(url)
-    resp.raise_for_status()
-    xls = pd.read_excel(BytesIO(resp.content), sheet_name=None, engine="openpyxl")
+def load_all_sheets_from_gsheets(sheet_url):
 
-    # Normaliza colunas
-    for k, df in xls.items():
-        df.columns = [str(c).strip() for c in df.columns]
-    return xls
+    # Extrai ID
+    try:
+        sheet_id = sheet_url.split("/d/")[1].split("/")[0]
+    except:
+        st.error("URL inválida do Google Sheets.")
+        return {}
 
-sheets = load_all_sheets(EXCEL_URL)
+    gid_list = {
+        "Aba 1": 0,
+        "Aba 2": 1,
+        "Aba 3": 2,
+        "Aba 4": 3,
+        "Aba 5": 4,
+        "Aba 6": 5,
+        "Aba 7": 6,
+        "Aba 8": 7,
+        "Aba 9": 8,
+        "Aba 10": 9,
+    }
 
-abas = list(sheets.keys())
-aba = st.selectbox("Escolha a aba da planilha:", abas)
+    dfs = {}
+    for name, gid in gid_list.items():
+        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
-df = sheets.get(aba, pd.DataFrame()).copy()
+        try:
+            r = requests.get(csv_url, timeout=15)
+            if r.status_code == 200 and len(r.text) > 20:
+                df = pd.read_csv(StringIO(r.text))
 
-# ============================================================
-# NORMALIZAÇÃO DO STATUS (CORRIGE QUALQUER TEXTO)
-# ============================================================
-def normalize_status(x):
-    if pd.isna(x):
-        return ""
-    s = str(x)
+                df.columns = df.columns.str.strip().str.lower()
 
-    # Remove espaços invisíveis
-    s = s.replace("\xa0", " ")
+                dfs[name] = df
+        except:
+            pass
 
-    # Remove múltiplos espaços
-    s = " ".join(s.split())
+    return dfs
 
-    # Lowercase
-    s = s.strip().lower()
 
-    # Regras flexíveis
-    if "pend" in s:
-        return "pendente"
-    if "renov" in s or s == "ok":
-        return "renovado"
+# ---------------------------------------------------------
+# 2) URL do Google Sheets
+# ---------------------------------------------------------
+SHEET_URL = st.secrets.get("SHEET_URL", "")
 
-    return s
+if not SHEET_URL:
+    st.error("❌ Nenhuma URL configurada em st.secrets.")
+    st.stop()
 
-if "Status" in df.columns:
-    df["Status"] = df["Status"].apply(normalize_status)
+dfs = load_all_sheets_from_gsheets(SHEET_URL)
 
-# ============================================================
-# SIDEBAR — FILTROS
-# ============================================================
-st.sidebar.header("Filtros")
+if not dfs:
+    st.error("❌ Não foi possível carregar nenhuma aba do Google Sheets.")
+    st.stop()
 
-colab_list = ["Todos"]
-if "Colaborador" in df.columns:
-    colab_list += sorted(df["Colaborador"].dropna().astype(str).unique().tolist())
-colaborador = st.sidebar.selectbox("Colaborador", colab_list)
+# ---------------------------------------------------------
+# 3) UI – seleção da aba
+# ---------------------------------------------------------
+st.sidebar.title("📄 Seleção da Aba")
+selected_sheet = st.sidebar.selectbox("Escolha a aba", list(dfs.keys()))
 
-status_list = ["Todos", "pendente", "renovado"]
-status_filter = st.sidebar.selectbox("Status", status_list)
+df = dfs[selected_sheet].copy()
 
-busca = st.sidebar.text_input("Buscar por CPF / Apólice / Segurado")
+df.columns = df.columns.str.strip().str.lower()
 
-df_filtered = df.copy()
+st.write("🧪 *Colunas encontradas:*", list(df.columns))
 
-if colaborador != "Todos":
-    df_filtered = df_filtered[df_filtered["Colaborador"] == colaborador]
-
-if status_filter != "Todos":
-    df_filtered = df_filtered[df_filtered["Status"] == status_filter]
-
-if busca:
-    q = busca.lower()
-    mask = pd.Series(False, index=df_filtered.index)
-    for c in ["CPF/CNPJ", "Apólice", "Segurado"]:
-        if c in df_filtered.columns:
-            mask |= df_filtered[c].astype(str).str.lower().str.contains(q)
-    df_filtered = df_filtered[mask]
-
-# ============================================================
-# RESUMO
-# ============================================================
-st.subheader("Resumo")
+# ---------------------------------------------------------
+# 4) Área de métricas (indicadores)
+# ---------------------------------------------------------
+st.title("📊 Painel de Produção & Renovações")
 
 col1, col2, col3 = st.columns(3)
 
-total_premio = 0
-if "Prêmio Líquido" in df_filtered.columns:
-    total_premio = pd.to_numeric(
-        df_filtered["Prêmio Líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
-        errors="coerce"
-    ).sum()
+col1.metric("📄 Registros", len(df))
 
-col1.metric("💰 Produção Total (R$)", f"{total_premio:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+col2.metric("🔴 Pendentes", (df["status"] == "pendente").sum())
 
-col2.metric("🔴 Pendentes", (df_filtered["Status"] == "pendente").sum())
-col3.metric("🟢 Renovados", (df_filtered["Status"] == "renovado").sum())
+col3.metric("🟢 Renovados", (df["status"] == "renovado").sum())
 
-# ============================================================
-# GRÁFICO
-# ============================================================
-if "Dia" in df_filtered.columns and "Prêmio Líquido" in df_filtered.columns:
-    df_chart = df_filtered.copy()
-    df_chart["Dia_dt"] = pd.to_datetime(df_chart["Dia"], dayfirst=True, errors="coerce")
-    df_chart["Prêmio Líquido"] = pd.to_numeric(
-        df_chart["Prêmio Líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
-        errors="coerce"
-    )
+# ---------------------------------------------------------
+# 5) Estilo CSS — círculos pulsando
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+.pulse-red {
+    height: 14px; width: 14px; border-radius: 50%;
+    background: red;
+    animation: pulseRed 1.5s infinite;
+    display: inline-block;
+}
+@keyframes pulseRed {
+    0% { box-shadow: 0 0 0 0 rgba(255,0,0,0.8); }
+    70% { box-shadow: 0 0 0 10px rgba(255,0,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,0,0,0); }
+}
+.pulse-green {
+    height: 14px; width: 14px; border-radius: 50%;
+    background: #00d400;
+    animation: pulseGreen 1.5s infinite;
+    display: inline-block;
+}
+@keyframes pulseGreen {
+    0% { box-shadow: 0 0 0 0 rgba(0,255,0,0.8); }
+    70% { box-shadow: 0 0 0 10px rgba(0,255,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,255,0,0); }
+}
+</style>
+""", unsafe_allow_html=True)
 
-    grp = df_chart.dropna(subset=["Dia_dt"]).groupby("Dia_dt", as_index=False)["Prêmio Líquido"].sum()
+# ---------------------------------------------------------
+# 6) Tabela com status visual
+# ---------------------------------------------------------
+def render_status(status):
+    if status == "pendente":
+        return '<span class="pulse-red"></span> Pendente'
+    elif status == "renovado":
+        return '<span class="pulse-green"></span> Renovado'
+    return status
 
-    fig = px.bar(grp, x="Dia_dt", y="Prêmio Líquido", title="Produção por Dia")
-    st.plotly_chart(fig, use_container_width=True)
+if "status" in df.columns:
+    df["status_indicador"] = df["status"].apply(render_status)
+else:
+    st.error("❌ A coluna 'Status' não existe na aba selecionada.")
 
-# ============================================================
-# TABELA HTML COM INDICADORES
-# ============================================================
-def render_indicator(v):
-    if v == "pendente":
-        return '<span class="indicador pendente"></span><b style="color:#b30000">Pendente</b>'
-    if v == "renovado":
-        return '<span class="indicador renovado"></span><b style="color:#0f7d3a">Renovado</b>'
-    return v
+df_display = df.copy()
 
-show_cols = ["Dia", "Segurado", "Apólice", "Prêmio Líquido", "Cia", "Item", "CPF/CNPJ", "Franquia", "Colaborador", "Status"]
-show_cols = [c for c in show_cols if c in df_filtered.columns]
+if "status_indicador" in df_display.columns:
+    df_display["status_indicador"] = df_display["status_indicador"].astype(str)
 
-display_df = df_filtered[show_cols].copy()
-
-if "Status" in display_df.columns:
-    display_df["Status"] = display_df["Status"].apply(render_indicator)
-
-# Monta HTML
-html = '<div class="table-wrap"><table class="custom"><thead><tr>'
-html += "".join(f"<th>{c}</th>" for c in show_cols)
-html += "</tr></thead><tbody>"
-
-for _, row in display_df.iterrows():
-    html += "<tr>"
-    for c in show_cols:
-        html += f"<td>{row[c]}</td>"
-    html += "</tr>"
-
-html += "</tbody></table></div>"
-
-st.markdown(html, unsafe_allow_html=True)
-
-st.caption("Atualize a planilha no Google Sheets e recarregue o app para ver mudanças.")
+st.subheader("📋 Tabela de Registros")
+st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
