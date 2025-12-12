@@ -7,6 +7,6 @@ SHEET_ID = "18DKFhsyTjJZcG7FqfB757DkPDDA2YgT0"
 
 # Abas disponíveis no painel: nome -> gid
 ABAS = {
-    "2026": "493636126",
+    "2026": "752357205",
     "2027": "1167663822",
 }
