@@ -1,18 +1,12 @@
-import pandas as pd
-import streamlit as st
+# config.py
+# Configurações da planilha (ID e GIDs das abas)
+# Não contém segredos — o arquivo apenas guarda IDs públicos.
 
-def load_sheet():
-    """
-    Carrega a planilha do Google Sheets usando a URL definida em st.secrets.
-    """
-    try:
-        sheet_url = st.secrets["sheet_url"]
-    except KeyError:
-        raise Exception("Nenhuma URL configurada em st.secrets")
+# ID da planilha (Google Sheets)
+SHEET_ID = "18DKFhsyTjJZcG7FqfB757DkPDDA2YgT0"
 
-    if not sheet_url.startswith("https://docs.google.com/spreadsheets"):
-        raise Exception("URL inválida de Google Sheets")
-
-    csv_url = sheet_url.replace("/edit#gid=", "/export?format=csv&gid=")
-
-    return pd.read_csv(csv_url)
+# Abas disponíveis no painel: nome -> gid
+ABAS = {
+    "2026": "493636126",
+    "2027": "1167663822",
+}
