@@ -1,143 +1,168 @@
 import streamlit as st
 import pandas as pd
 import requests
-from io import StringIO
+from io import BytesIO
 
 st.set_page_config(page_title="Painel de Seguros", layout="wide")
 
-# ---------------------------------------------------------
-# 1) Função para carregar todas as abas do Google Sheets
-# ---------------------------------------------------------
-@st.cache_data(ttl=60)
-def load_all_sheets_from_gsheets(sheet_url):
+# ============================================================
+# URL DO GOOGLE SHEETS (com link de exportação .xlsx)
+# ============================================================
+EXCEL_URL = "https://docs.google.com/spreadsheets/d/18DKFhsyTjJZcG7FqfB757DkPDDA2YgT0/export?format=xlsx"
 
-    # Extrai ID
+# ============================================================
+# Função para carregar todas as abas da planilha
+# ============================================================
+@st.cache_data(ttl=60)
+def load_all_sheets(url):
     try:
-        sheet_id = sheet_url.split("/d/")[1].split("/")[0]
-    except:
-        st.error("URL inválida do Google Sheets.")
+        # Baixa a planilha do Google Sheets
+        resp = requests.get(url)
+        resp.raise_for_status()
+
+        # Lê as abas e as coloca em um dicionário
+        xls = pd.read_excel(BytesIO(resp.content), sheet_name=None, engine="openpyxl")
+
+        # Limpa os nomes das colunas (removendo espaços extras)
+        for k, df in xls.items():
+            df.columns = [str(c).strip() for c in df.columns]
+
+        return xls
+
+    except Exception as e:
+        st.error("Erro ao carregar planilha do Google Sheets.")
+        st.code(str(e))
         return {}
 
-    gid_list = {
-        "Aba 1": 0,
-        "Aba 2": 1,
-        "Aba 3": 2,
-        "Aba 4": 3,
-        "Aba 5": 4,
-        "Aba 6": 5,
-        "Aba 7": 6,
-        "Aba 8": 7,
-        "Aba 9": 8,
-        "Aba 10": 9,
-    }
+# ============================================================
+# Carrega as planilhas
+# ============================================================
+sheets = load_all_sheets(EXCEL_URL)
 
-    dfs = {}
-    for name, gid in gid_list.items():
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-
-        try:
-            r = requests.get(csv_url, timeout=15)
-            if r.status_code == 200 and len(r.text) > 20:
-                df = pd.read_csv(StringIO(r.text))
-
-                df.columns = df.columns.str.strip().str.lower()
-
-                dfs[name] = df
-        except:
-            pass
-
-    return dfs
-
-
-# ---------------------------------------------------------
-# 2) URL do Google Sheets
-# ---------------------------------------------------------
-SHEET_URL = st.secrets.get("SHEET_URL", "")
-
-if not SHEET_URL:
-    st.error("❌ Nenhuma URL configurada em st.secrets.")
-    st.stop()
-
-dfs = load_all_sheets_from_gsheets(SHEET_URL)
-
-if not dfs:
+if not sheets:
     st.error("❌ Não foi possível carregar nenhuma aba do Google Sheets.")
     st.stop()
 
-# ---------------------------------------------------------
-# 3) UI – seleção da aba
-# ---------------------------------------------------------
-st.sidebar.title("📄 Seleção da Aba")
-selected_sheet = st.sidebar.selectbox("Escolha a aba", list(dfs.keys()))
+# ============================================================
+# Seleção de aba
+# ============================================================
+abas = list(sheets.keys())
+aba = st.selectbox("Escolha a aba da planilha:", abas)
 
-df = dfs[selected_sheet].copy()
+df = sheets.get(aba, pd.DataFrame()).copy()
 
 df.columns = df.columns.str.strip().str.lower()
 
-st.write("🧪 *Colunas encontradas:*", list(df.columns))
+# ============================================================
+# Função para normalizar status (tolerante)
+# ============================================================
+def normalize_status(x):
+    s = str(x).lower().strip().replace("\xa0", " ")  # remove NBSP e normaliza
+    if "pend" in s:
+        return "pendente"
+    elif "renov" in s:
+        return "renovado"
+    return s
 
-# ---------------------------------------------------------
-# 4) Área de métricas (indicadores)
-# ---------------------------------------------------------
-st.title("📊 Painel de Produção & Renovações")
+if "status" in df.columns:
+    df["status"] = df["status"].apply(normalize_status)
+
+# ============================================================
+# SIDEBAR – FILTROS
+# ============================================================
+st.sidebar.header("Filtros")
+
+colab_list = ["Todos"]
+if "colaborador" in df.columns:
+    colab_list += sorted(df["colaborador"].dropna().astype(str).unique().tolist())
+colaborador = st.sidebar.selectbox("Colaborador", colab_list)
+
+status_list = ["Todos", "pendente", "renovado"]
+status_filter = st.sidebar.selectbox("Status", status_list)
+
+busca = st.sidebar.text_input("Buscar por CPF / Apólice / Segurado")
+
+df_filtered = df.copy()
+
+if colaborador != "Todos":
+    df_filtered = df_filtered[df_filtered["colaborador"] == colaborador]
+
+if status_filter != "Todos":
+    df_filtered = df_filtered[df_filtered["status"] == status_filter]
+
+if busca:
+    q = busca.lower()
+    mask = pd.Series(False, index=df_filtered.index)
+    for c in ["cpf/cnpj", "apólice", "segurado"]:
+        if c in df_filtered.columns:
+            mask |= df_filtered[c].astype(str).str.lower().str.contains(q)
+    df_filtered = df_filtered[mask]
+
+# ============================================================
+# RESUMO DAS MÉTRICAS
+# ============================================================
+st.subheader("Resumo")
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric("📄 Registros", len(df))
+total_premio = 0
+if "prêmio líquido" in df_filtered.columns:
+    total_premio = pd.to_numeric(
+        df_filtered["prêmio líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
+        errors="coerce"
+    ).sum()
 
-col2.metric("🔴 Pendentes", (df["status"] == "pendente").sum())
+col1.metric("💰 Produção Total (R$)", f"{total_premio:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-col3.metric("🟢 Renovados", (df["status"] == "renovado").sum())
+col2.metric("🔴 Pendentes", (df_filtered["status"] == "pendente").sum())
+col3.metric("🟢 Renovados", (df_filtered["status"] == "renovado").sum())
 
-# ---------------------------------------------------------
-# 5) Estilo CSS — círculos pulsando
-# ---------------------------------------------------------
-st.markdown("""
-<style>
-.pulse-red {
-    height: 14px; width: 14px; border-radius: 50%;
-    background: red;
-    animation: pulseRed 1.5s infinite;
-    display: inline-block;
-}
-@keyframes pulseRed {
-    0% { box-shadow: 0 0 0 0 rgba(255,0,0,0.8); }
-    70% { box-shadow: 0 0 0 10px rgba(255,0,0,0); }
-    100% { box-shadow: 0 0 0 0 rgba(255,0,0,0); }
-}
-.pulse-green {
-    height: 14px; width: 14px; border-radius: 50%;
-    background: #00d400;
-    animation: pulseGreen 1.5s infinite;
-    display: inline-block;
-}
-@keyframes pulseGreen {
-    0% { box-shadow: 0 0 0 0 rgba(0,255,0,0.8); }
-    70% { box-shadow: 0 0 0 10px rgba(0,255,0,0); }
-    100% { box-shadow: 0 0 0 0 rgba(0,255,0,0); }
-}
-</style>
-""", unsafe_allow_html=True)
+# ============================================================
+# GRÁFICO DE PRODUÇÃO POR DIA
+# ============================================================
+if "dia" in df_filtered.columns and "prêmio líquido" in df_filtered.columns:
+    df_chart = df_filtered.copy()
+    df_chart["dia_dt"] = pd.to_datetime(df_chart["dia"], dayfirst=True, errors="coerce")
+    df_chart["prêmio líquido"] = pd.to_numeric(
+        df_chart["prêmio líquido"].astype(str).str.replace('[^0-9,.-]', '', regex=True).str.replace(',', '.'),
+        errors="coerce"
+    )
 
-# ---------------------------------------------------------
-# 6) Tabela com status visual
-# ---------------------------------------------------------
-def render_status(status):
-    if status == "pendente":
-        return '<span class="pulse-red"></span> Pendente'
-    elif status == "renovado":
-        return '<span class="pulse-green"></span> Renovado'
-    return status
+    df_group = df_chart.dropna(subset=["dia_dt"]).groupby("dia_dt", as_index=False)["prêmio líquido"].sum()
 
-if "status" in df.columns:
-    df["status_indicador"] = df["status"].apply(render_status)
-else:
-    st.error("❌ A coluna 'Status' não existe na aba selecionada.")
+    fig = px.bar(df_group, x="dia_dt", y="prêmio líquido", title="Produção por Dia")
+    st.plotly_chart(fig, use_container_width=True)
 
-df_display = df.copy()
+# ============================================================
+# TABELA COM INDICADORES VISUAIS (Pendente / Renovado)
+# ============================================================
+st.subheader("Tabela de Registros")
 
-if "status_indicador" in df_display.columns:
-    df_display["status_indicador"] = df_display["status_indicador"].astype(str)
+def render_indicator(val):
+    if val == "pendente":
+        return '<span class="indicador pendente"></span><b style="color:#ff4444">Pendente</b>'
+    if val == "renovado":
+        return '<span class="indicador renovado"></span><b style="color:#16a34a">Renovado</b>'
+    return val
 
-st.subheader("📋 Tabela de Registros")
-st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
+df_filtered["status_indicador"] = df_filtered["status"].apply(render_indicator)
+
+show_cols = ["dia", "segurado", "apólice", "prêmio líquido", "cia", "item", "cpf/cnpj", "franquia", "colaborador", "status_indicador"]
+show_cols = [c for c in show_cols if c in df_filtered.columns]
+
+# Cria a tabela HTML
+html = '<div class="table-wrap"><table class="custom"><thead><tr>'
+html += "".join(f"<th>{c}</th>" for c in show_cols)
+html += "</tr></thead><tbody>"
+
+for _, row in df_filtered.iterrows():
+    html += "<tr>"
+    for c in show_cols:
+        html += f"<td>{row[c]}</td>"
+    html += "</tr>"
+
+html += "</tbody></table></div>"
+
+st.markdown(html, unsafe_allow_html=True)
+
+st.caption("Atualize a planilha no Google Sheets e recarregue o app para ver as mudanças.")
